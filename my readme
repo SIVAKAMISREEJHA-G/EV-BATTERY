@@ -1,0 +1,154 @@
+# SoH Prediction – Simple MLP for FPGA
+=======================================
+
+## Files
+| File                  | Purpose                                      |
+|-----------------------|----------------------------------------------|
+| `train_soh.py`        | Train the model, save weights, evaluate      |
+| `predict_soh.py`      | Load saved model, predict SoH                |
+| `soh_mlp_fpga.v`      | Verilog FPGA inference module (Q8.8)         |
+| `battery_data.csv`    | Your training data (paste all 168 rows here) |
+
+---
+
+## Step 1 – Prepare your data
+
+Paste all 168 rows into `battery_data.csv`.  
+Required columns (exact names):
+
+```
+Cycle, Avg_Voltage, Avg_Current, Avg_Temperature, Capacity, SoH
+```
+
+---
+
+## Step 2 – Train
+
+```bash
+pip install numpy pandas scikit-learn
+python train_soh.py
+```
+
+Outputs saved automatically:
+
+```
+soh_model/
+  weights.json               ← float weights (used by predict_soh.py)
+  scaler.json                ← normalisation params
+  weights_fixed_point.json   ← Q8.8 integers for FPGA Verilog
+
+results/
+  metrics.json               ← MAE / RMSE / R²
+  predictions.csv            ← true vs predicted on test set
+  loss_history.csv           ← loss per 200 epochs
+```
+
+---
+
+## Step 3 – Predict
+
+```bash
+python predict_soh.py
+```
+
+- **Single sample** → edit the `sample` dict inside the script  
+- **Batch** → place a `new_data.csv` (same feature columns, no SoH needed)  
+  next to the script; results saved to `results/batch_predictions.csv`  
+- **Interactive** → type values when prompted in terminal
+
+---
+
+## Step 4 – FPGA Deployment
+
+1. Open `soh_model/weights_fixed_point.json`
+2. Copy the integer arrays into the `localparam` blocks in `soh_mlp_fpga.v`
+3. Synthesise with your FPGA toolchain (Vivado / Quartus / etc.)
+
+### Input interface
+All inputs are `Q8.8` fixed-point (16-bit signed).  
+`real_value → fpga_input = round(normalised_value × 256)`
+
+Normalise each feature first:
+```
+normalised = (raw - X_min) / X_range    ← values from scaler.json
+fpga_input = round(normalised × 256)
+```
+
+### Output
+`soh_out` is also Q8.8:  
+`real_SoH = (soh_out / 256) × y_range + y_min`
+
+---
+
+## Model Architecture
+
+```
+Input(4) → Dense(8, ReLU) → Dense(4, ReLU) → Dense(1, Linear) → SoH
+```
+Kept intentionally small for easy FPGA synthesis.
+
+
+
+
+
+C:\Users\sivak\Downloads\5.+Battery+Data+Set\5. Battery Data Set\1. BatteryAgingARC-FY08Q4>C:/Users/sivak/AppData/Local/Programs/Python/Python38/python.exe "c:/Users/sivak/Downloads/5.+Battery+Data+Set/5. Battery Data Set/1. BatteryAgingARC-FY08Q4/train.py"
+Loaded 168 rows
+   Cycle  Avg_Voltage  Avg_Current  Avg_Temperature  Capacity       SoH
+0      1     3.556946    -1.990533        32.142778  2.035338  1.000000
+1      2     3.561476    -1.990278        32.293075  2.025140  0.994990
+2      3     3.566752    -1.989947        32.244147  2.013326  0.989185
+3      4     3.568795    -1.989601        32.147117  2.013285  0.989165
+4      5     3.563971    -1.989548        32.066873  2.000528  0.982898
+Train: 142  |  Test: 26
+
+Training ...
+  Epoch   500  |  Train: 0.000020  |  Test: 0.000021
+  Epoch  1000  |  Train: 0.000008  |  Test: 0.000008
+  Epoch  1500  |  Train: 0.000005  |  Test: 0.000005
+  Epoch  2000  |  Train: 0.000004  |  Test: 0.000003
+  Epoch  2500  |  Train: 0.000003  |  Test: 0.000003
+  Epoch  3000  |  Train: 0.000002  |  Test: 0.000002
+  Epoch  3500  |  Train: 0.000002  |  Test: 0.000001
+  Epoch  4000  |  Train: 0.000001  |  Test: 0.000001
+  Epoch  4500  |  Train: 0.000010  |  Test: 0.000011
+  Epoch  5000  |  Train: 0.000001  |  Test: 0.000001
+Training complete.
+
+MAE  : 0.000227
+RMSE : 0.000389
+R²   : 0.999992
+
+── Test Set: True vs Predicted ──────────────────────────────
+    True SoH   Predicted   Abs Error
+    0.638914    0.638964    0.000050
+    0.945679    0.945481    0.000198
+    0.680064    0.679936    0.000128
+    0.912492    0.912450    0.000042
+    0.625958    0.626037    0.000078
+    0.579595    0.579509    0.000086
+    0.572092    0.571798    0.000294
+    0.849592    0.849491    0.000102
+    0.695224    0.694915    0.000309
+    0.790458    0.791719    0.001260
+    0.928199    0.928130    0.000069
+    0.595038    0.595013    0.000025
+    0.662019    0.662777    0.000757
+    0.841790    0.841634    0.000156
+    0.756962    0.755969    0.000994
+    0.713358    0.712714    0.000644
+    0.934198    0.934172    0.000026
+    0.685161    0.685112    0.000050
+    0.733795    0.733711    0.000084
+    0.685471    0.685567    0.000097
+    0.972628    0.972466    0.000163
+    0.922834    0.922835    0.000002
+    0.924776    0.924623    0.000154
+    0.917582    0.917598    0.000016
+    0.944944    0.944976    0.000032
+    0.961625    0.961529    0.000096
+
+Results saved to 'results/'
+Model saved to 'soh_model/'
+  weights.json              – float weights
+  scaler.json               – normalisation params
+  weights_fixed_point.json  – Q8.8 fixed-point for FPGA

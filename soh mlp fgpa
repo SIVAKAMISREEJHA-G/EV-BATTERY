@@ -1,0 +1,112 @@
+// =============================================================================
+//  SoH MLP Inference - FPGA Verilog (Q8.8 Fixed-Point)
+//  Architecture: 4 → 8 → 4 → 1  (ReLU hidden, Linear output)
+//
+//  HOW TO USE:
+//  1. Run train_soh.py  →  generates soh_model/weights_fixed_point.json
+//  2. Copy the integer weight values from that JSON into the localparams below
+//  3. Synthesise this file on your FPGA toolchain
+//
+//  Fixed-point format: Q8.8  (scale = 256)
+//    Real value = integer / 256
+//  All intermediate products are 32-bit before right-shift by 8.
+// =============================================================================
+
+module soh_mlp #(
+    parameter SCALE = 256          // Q8.8 fixed-point scale
+)(
+    input  wire        clk,
+    input  wire        rst,
+    input  wire        valid_in,
+
+    // 4 normalised inputs  (Q8.8 format, i.e. real_val * 256)
+    input  wire signed [15:0] avg_voltage,
+    input  wire signed [15:0] avg_current,
+    input  wire signed [15:0] avg_temperature,
+    input  wire signed [15:0] capacity,
+
+    output reg  signed [15:0] soh_out,    // predicted SoH * 256
+    output reg                valid_out
+);
+
+// ---------------------------------------------------------------------------
+//  REPLACE these placeholders with actual values from
+//  soh_model/weights_fixed_point.json after training
+// ---------------------------------------------------------------------------
+
+// --- Layer 1 weights  (4 inputs × 8 neurons) --------------------------------
+localparam signed [15:0] W1 [0:3][0:7] = '{
+    '{16'sd50, 16'sd-30, 16'sd20, 16'sd-10, 16'sd40, 16'sd-20, 16'sd10, 16'sd-5},
+    '{16'sd-40, 16'sd25, 16'sd-15, 16'sd30, 16'sd-25, 16'sd15, 16'sd-8, 16'sd20},
+    '{16'sd30, 16'sd-20, 16'sd40, 16'sd-30, 16'sd10, 16'sd-40, 16'sd25, 16'sd-15},
+    '{16'sd-20, 16'sd35, 16'sd-25, 16'sd20, 16'sd-35, 16'sd25, 16'sd-12, 16'sd18}
+};
+localparam signed [15:0] b1 [0:7] = '{16'sd5, 16'sd-3, 16'sd2, 16'sd-1,
+                                       16'sd4, 16'sd-2, 16'sd1, 16'sd-1};
+
+// --- Layer 2 weights  (8 × 4) -----------------------------------------------
+localparam signed [15:0] W2 [0:7][0:3] = '{
+    '{16'sd40, 16'sd-25, 16'sd15, 16'sd-10},
+    '{16'sd-30, 16'sd20, 16'sd-12, 16'sd25},
+    '{16'sd20, 16'sd-15, 16'sd30, 16'sd-20},
+    '{16'sd-10, 16'sd35, 16'sd-20, 16'sd15},
+    '{16'sd15, 16'sd-10, 16'sd25, 16'sd-30},
+    '{16'sd-20, 16'sd15, 16'sd-10, 16'sd20},
+    '{16'sd10, 16'sd-5,  16'sd15, 16'sd-10},
+    '{16'sd-5,  16'sd10, 16'sd-8,  16'sd12}
+};
+localparam signed [15:0] b2 [0:3] = '{16'sd3, 16'sd-2, 16'sd1, 16'sd-1};
+
+// --- Layer 3 weights  (4 × 1) -----------------------------------------------
+localparam signed [15:0] W3 [0:3] = '{16'sd60, 16'sd-40, 16'sd30, 16'sd-20};
+localparam signed [15:0] b3       =   16'sd10;
+
+// ---------------------------------------------------------------------------
+
+// Internal signals
+reg signed [31:0] acc;
+reg signed [15:0] a1 [0:7];
+reg signed [15:0] a2 [0:3];
+
+integer i, j;
+
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        soh_out   <= 16'sd0;
+        valid_out <= 1'b0;
+    end else if (valid_in) begin
+
+        // ── Layer 1: z = X·W1 + b1, a = ReLU(z) ──────────────────────────
+        for (i = 0; i < 8; i = i + 1) begin
+            acc = {{16{b1[i][15]}}, b1[i]} <<< 8;   // bias pre-scaled
+            acc = acc + avg_voltage     * W1[0][i]
+                      + avg_current     * W1[1][i]
+                      + avg_temperature * W1[2][i]
+                      + capacity        * W1[3][i];
+            acc = acc >>> 8;                         // back to Q8.8
+            a1[i] = (acc[15:0] > 16'sd0) ? acc[15:0] : 16'sd0;  // ReLU
+        end
+
+        // ── Layer 2: z = a1·W2 + b2, a = ReLU(z) ─────────────────────────
+        for (j = 0; j < 4; j = j + 1) begin
+            acc = {{16{b2[j][15]}}, b2[j]} <<< 8;
+            for (i = 0; i < 8; i = i + 1)
+                acc = acc + a1[i] * W2[i][j];
+            acc = acc >>> 8;
+            a2[j] = (acc[15:0] > 16'sd0) ? acc[15:0] : 16'sd0;
+        end
+
+        // ── Layer 3: z = a2·W3 + b3  (linear output) ──────────────────────
+        acc = {{16{b3[15]}}, b3} <<< 8;
+        for (j = 0; j < 4; j = j + 1)
+            acc = acc + a2[j] * W3[j];
+        acc = acc >>> 8;
+
+        soh_out   <= acc[15:0];
+        valid_out <= 1'b1;
+    end else begin
+        valid_out <= 1'b0;
+    end
+end
+
+endmodule
